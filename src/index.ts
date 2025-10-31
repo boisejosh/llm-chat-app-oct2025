@@ -1,12 +1,13 @@
 import { Env, ChatMessage } from "./types";
 
 // Model ID for Workers AI model
-const MODEL_ID = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+// OLD MODEL ** const MODEL_ID = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+const MODEL_ID = "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b";
 
 // AI Gateway Configuration (optional)
 // Uncomment and set your gateway ID to enable AI Gateway with guardrails
 // If not set, requests will go directly to the model
-const AI_GATEWAY_ID = "chatbot-gateway"; // Create an AI Gateway in the Dashboard and set the ID here
+const AI_GATEWAY_ID = "new-gateway"; // Create an AI Gateway in the Dashboard and set the ID here
 
 // Default system prompt (kept) + small safety shim
 const SYSTEM_PROMPT =
