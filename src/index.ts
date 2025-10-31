@@ -3,7 +3,7 @@ import { Env, ChatMessage } from "./types";
 // Model ID for Workers AI model
 // LLAMA ** const MODEL_ID = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 // DEEP ** const MODEL_ID = "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b";
-MODEL_ID = "@cf/openai/gpt-oss-20b";
+const MODEL_ID = "@cf/openai/gpt-oss-20b";
 
 // AI Gateway Configuration (optional)
 // Uncomment and set your gateway ID to enable AI Gateway with guardrails
