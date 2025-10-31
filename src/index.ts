@@ -143,7 +143,7 @@ async function handleChatRequest(request: Request, env: Env): Promise<Response> 
     // Build AI options
     const aiOptions: any = {
       messages: modelMessages,
-      max_tokens: 4096,
+      max_tokens: 16384,
       // Conservative decoding reduces borderline content volatility
       temperature: 0.2,
       top_p: 0.9,
