@@ -1,9 +1,9 @@
 import { Env, ChatMessage } from "./types";
 
 // Model ID for Workers AI model
-const MODEL_ID = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+// LLAMA ** const MODEL_ID = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 // DEEP ** const MODEL_ID = "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b";
-//const MODEL_ID = "@cf/openai/gpt-oss-20b";
+MODEL_ID = "@cf/openai/gpt-oss-20b";
 
 // AI Gateway Configuration (optional)
 // Uncomment and set your gateway ID to enable AI Gateway with guardrails
@@ -144,7 +144,7 @@ async function handleChatRequest(request: Request, env: Env): Promise<Response> 
     // Build AI options
     const aiOptions: any = {
       messages: modelMessages,
-      max_tokens: 65536,
+      max_tokens:16384,
       // Conservative decoding reduces borderline content volatility
       temperature: 0.2,
       top_p: 0.9,
