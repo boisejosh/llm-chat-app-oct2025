@@ -1,13 +1,24 @@
+
 import { Env, ChatMessage } from "./types";
 
 // Model ID for Workers AI model
-const MODEL_ID = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
-//const MODEL_ID = "@cf/openai/gpt-oss-120b";
+// GPT-OSS-120b is OpenAI's open-weight model designed for powerful reasoning and agentic tasks
+const MODEL_ID = "@cf/openai/gpt-oss-120b";
+
+// Reasoning configuration for GPT-OSS-120b
+// effort: Controls computational effort on reasoning (low, medium, high)
+// Higher effort results in more thorough reasoning but uses more tokens and time
+const REASONING_EFFORT = "medium";
+
+// summary: Controls the detail level of reasoning summaries (auto, concise, detailed)
+// Useful for debugging and understanding the model's reasoning process
+const REASONING_SUMMARY = "auto";
 
 // AI Gateway Configuration (optional)
-// Uncomment and set your gateway ID to enable AI Gateway with guardrails
-// If not set, requests will go directly to the model
-const AI_GATEWAY_ID = "new-gateway"; // Create an AI Gateway in the Dashboard and set the ID here
+// Set your gateway ID to enable AI Gateway with guardrails, caching, and analytics
+// Leave empty ("") to send requests directly to the model without AI Gateway
+// When empty, all requests go straight to GPT-OSS-120b without any gateway processing
+const AI_GATEWAY_ID = "new-gateway"; // Example: "chatbot-gateway" - Create an AI Gateway in the Dashboard and set the ID here
 
 // Default system prompt (kept) + small safety shim
 const SYSTEM_PROMPT =
@@ -45,31 +56,32 @@ export default {
 } satisfies ExportedHandler<Env>;
 
 /**
- * Build sanitized, compact history:
- * - Ensure single system prompt (yours + safety shim)
- * - Drop any assistant lines that look like 'blocked by guardrails'
- *   and drop the adjacent offending user turn (if present)
- * - Drop any user messages whose content is present in blockedUserContents
- * - Limit to last 16 messages to avoid dragging old risky text forward
+ * Build sanitized conversation history for GPT-OSS-120b Responses API
+ * 
+ * GPT-OSS-120b uses the Responses API format which differs from the chat/messages API:
+ * - Uses 'input' parameter (string or array) for the user's input
+ * - Uses 'instructions' parameter for system prompts instead of system role messages
+ * 
+ * This function:
+ * - Cleans and sanitizes the conversation history
+ * - Drops any assistant lines that look like 'blocked by guardrails'
+ * - Drops any user messages whose content is present in blockedUserContents
+ * - Limits to last 16 messages to avoid context overflow
+ * - Formats the conversation as a simple string for the input parameter
  */
-function buildModelMessages(
+function buildModelInput(
   raw: ChatMessage[],
   blockedUserContents: Set<string>
-): ChatMessage[] {
-  const msgs: ChatMessage[] = [];
-
-  // Single system prompt
-  msgs.push({
-    role: "system",
-    content: `${SYSTEM_PROMPT}\n\nSafety: ${SAFETY_SHIM}`,
-  });
+): { instructions: string; input: string } {
+  // Build the instructions (system prompt) for the model
+  const instructions = `${SYSTEM_PROMPT}\n\nSafety: ${SAFETY_SHIM}`;
 
   // Clean up historical turns
   const cleaned: ChatMessage[] = [];
   for (let i = 0; i < raw.length; i++) {
     const m = raw[i];
 
-    // Ignore any system prompts coming from client
+    // Ignore any system prompts coming from client (handled via instructions parameter)
     if (m.role === "system") continue;
 
     // Drop any user content we've previously marked as blocked
@@ -93,10 +105,31 @@ function buildModelMessages(
     cleaned.push(m);
   }
 
+  // Limit to last 16 messages to stay within context window efficiently
   const windowed =
     cleaned.length > 16 ? cleaned.slice(cleaned.length - 16) : cleaned;
 
-  return msgs.concat(windowed);
+  // Format conversation as a simple string
+  // For GPT-OSS-120b, we'll format it as a conversational string
+  // If there's only one message (the current user message), just return it
+  if (windowed.length === 1 && windowed[0].role === "user") {
+    return { instructions, input: windowed[0].content };
+  }
+  
+  // If there's conversation history, format it as a readable conversation
+  const conversationText = windowed
+    .map((m) => {
+      if (m.role === "user") {
+        return `User: ${m.content}`;
+      } else if (m.role === "assistant") {
+        return `Assistant: ${m.content}`;
+      }
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n\n");
+
+  return { instructions, input: conversationText };
 }
 
 /** Parse AI Gateway error shapes robustly (fixes TS squiggles) */
@@ -137,22 +170,32 @@ async function handleChatRequest(request: Request, env: Env): Promise<Response> 
       Array.isArray(raw?.blockedUserContents) ? raw!.blockedUserContents! : []
     );
 
-    // Build sanitized model messages
-    const modelMessages = buildModelMessages(messages, blocked);
+    // Build sanitized model input for GPT-OSS-120b Responses API
+    const { instructions, input } = buildModelInput(messages, blocked);
 
-    // Build AI options
+    // Build AI options for GPT-OSS-120b Responses API
+    // Note: GPT-OSS-120b uses 'input' (string) and 'instructions' instead of 'messages'
     const aiOptions: any = {
-      messages: modelMessages,
-      max_tokens: 4096,
-      // Conservative decoding reduces borderline content volatility
-      temperature: 0.2,
-      top_p: 0.9,
+      // input: The conversation as a string (not an array)
+      input: input,
     };
+    
+    // Add instructions if we have them
+    // Note: Testing without instructions first to see if that's causing issues
+    // Uncomment if needed:
+    // aiOptions.instructions = instructions;
+    
+    // Add reasoning configuration if needed
+    // Note: Commenting out temporarily to test basic functionality
+    // Uncomment once basic chat is working:
+    // aiOptions.reasoning = {
+    //   effort: REASONING_EFFORT,
+    //   summary: REASONING_SUMMARY,
+    // };
 
     // Build run options with optional gateway
-    const runOptions: any = {
-      returnRawResponse: true,
-    };
+    // Note: Removing returnRawResponse to get the parsed response directly
+    const runOptions: any = {};
 
     // Only add gateway if AI_GATEWAY_ID is configured
     if (AI_GATEWAY_ID) {
@@ -164,88 +207,122 @@ async function handleChatRequest(request: Request, env: Env): Promise<Response> 
     }
 
     // Run LLM request (with or without AI Gateway)
-    const aiResponse = (await env.AI.run(MODEL_ID, aiOptions, runOptions)) as Response;
+    // Cast MODEL_ID to 'any' to avoid TypeScript errors with new model IDs not yet in type definitions
+    const aiResponse = await env.AI.run(MODEL_ID as any, aiOptions, runOptions);
 
-    // Check if the response was blocked by Guardrails or other errors
-    if (!aiResponse.ok) {
-      let errorResponse = {
-        error: "An error occurred while processing your request.",
-        errorType: "general",
-        details: "",
-        usingGateway: !!AI_GATEWAY_ID,
-      };
-
-      try {
-        const body = await aiResponse.json();
-        const { code, message } = parseGatewayError(body);
-
-        if (code === 2016) {
-          errorResponse = {
+    // Extract the response text from the AI response
+    // GPT-OSS-120b returns a complex response structure with reasoning and message output
+    let responseText = "";
+    
+    if (typeof aiResponse === "string") {
+      responseText = aiResponse;
+    } else if (aiResponse && typeof aiResponse === "object") {
+      const resp = aiResponse as any;
+      
+      // GPT-OSS-120b Responses API format:
+      // The response has an "output" array with reasoning and message objects
+      // We need to find the message object and extract the text from it
+      if (resp.output && Array.isArray(resp.output)) {
+        // Find the message output (type: "message")
+        const messageOutput = resp.output.find((item: any) => item.type === "message");
+        
+        if (messageOutput && messageOutput.content && Array.isArray(messageOutput.content)) {
+          // Extract text from the first content item
+          const textContent = messageOutput.content.find((item: any) => item.type === "output_text");
+          if (textContent && textContent.text) {
+            responseText = textContent.text;
+          }
+        }
+      }
+      
+      // Fallback to other common formats if the above didn't work
+      if (!responseText) {
+        if (resp.response) {
+          responseText = resp.response;
+        } else if (resp.content) {
+          responseText = resp.content;
+        } else if (resp.choices && resp.choices[0]?.message?.content) {
+          responseText = resp.choices[0].message.content;
+        } else if (resp.result && resp.result.response) {
+          responseText = resp.result.response;
+        } else {
+          // If we can't find the text, log the whole response
+          console.error("Could not extract text from response:", aiResponse);
+          responseText = "Error: Could not parse AI response";
+        }
+      }
+    }
+    
+    // Return simple JSON response (non-streaming for now)
+    return new Response(
+      JSON.stringify({ 
+        response: responseText,
+        success: true 
+      }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }
+    );
+  } catch (error) {
+    console.error("Error processing chat request:", error);
+    
+    // Check if this is an AI Gateway security block error
+    if (error && typeof error === "object") {
+      const errorObj = error as any;
+      
+      // Parse AI Gateway error from the error object
+      let gatewayError = null;
+      if (errorObj.message && typeof errorObj.message === "string") {
+        try {
+          // The error message might contain JSON
+          const jsonMatch = errorObj.message.match(/\{.*\}/);
+          if (jsonMatch) {
+            const parsed = JSON.parse(jsonMatch[0]);
+            if (parsed.error && Array.isArray(parsed.error)) {
+              gatewayError = parsed.error[0];
+            }
+          }
+        } catch (parseErr) {
+          // Ignore parse errors
+        }
+      }
+      
+      // Handle specific AI Gateway error codes
+      if (gatewayError && gatewayError.code === 2016) {
+        return new Response(
+          JSON.stringify({
             error: "Prompt Blocked by Security Policy",
             errorType: "prompt_blocked",
             details: AI_GATEWAY_ID
               ? "Your message was blocked by your organization's AI Gateway security policy. This may be due to content that violates safety guidelines including: hate speech, violence, self-harm, explicit content, or other harmful material."
               : "Your message was blocked due to security policy.",
             usingGateway: !!AI_GATEWAY_ID,
-          };
-        } else if (code === 2017) {
-          errorResponse = {
+          }),
+          {
+            status: 400,
+            headers: { "Content-Type": "application/json" },
+          }
+        );
+      } else if (gatewayError && gatewayError.code === 2017) {
+        return new Response(
+          JSON.stringify({
             error: "Response Blocked by Security Policy",
             errorType: "response_blocked",
             details: AI_GATEWAY_ID
               ? "The AI's response was blocked by your organization's AI Gateway security policy. The model attempted to generate content that violates safety guidelines. Please rephrase your question or try a different topic."
               : "The AI's response was blocked due to security policy.",
             usingGateway: !!AI_GATEWAY_ID,
-          };
-        } else if (typeof message === "string" && message.length) {
-          errorResponse.error = message;
-          errorResponse.details = "Please try again or contact support if the issue persists.";
-        }
-      } catch {
-        // fallback to generic error
-      }
-
-      return new Response(JSON.stringify(errorResponse), {
-        status: aiResponse.status,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-
-    // Stream the AI response using SSE format
-    const { readable, writable } = new TransformStream();
-    const writer = writable.getWriter();
-    const reader = aiResponse.body?.getReader();
-    const encoder = new TextEncoder();
-    const decoder = new TextDecoder();
-
-    if (reader) {
-      (async () => {
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            const textChunk = decoder.decode(value);
-            // passthrough as SSE `data: {json}`
-            await writer.write(encoder.encode(`data: ${textChunk}\n\n`));
+          }),
+          {
+            status: 400,
+            headers: { "Content-Type": "application/json" },
           }
-        } catch (err) {
-          console.error("Streaming error:", err);
-        } finally {
-          await writer.close();
-        }
-      })();
+        );
+      }
     }
-
-    return new Response(readable, {
-      headers: {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-      },
-    });
-  } catch (error) {
-    console.error("Error processing chat request:", error);
+    
+    // Generic error fallback
     return new Response(JSON.stringify({ error: "Failed to process request" }), {
       status: 500,
       headers: { "content-type": "application/json" },
