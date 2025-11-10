@@ -1,34 +1,20 @@
-
 import { Env, ChatMessage } from "./types";
 
-// Model ID for Workers AI model
-// GPT-OSS-120b is OpenAI's open-weight model designed for powerful reasoning and agentic tasks
+// GPT-OSS-120b model configuration
 const MODEL_ID = "@cf/openai/gpt-oss-120b";
+const REASONING_EFFORT = "medium"; // low, medium, high
+const REASONING_SUMMARY = "auto"; // auto, concise, detailed
 
-// Reasoning configuration for GPT-OSS-120b
-// effort: Controls computational effort on reasoning (low, medium, high)
-// Higher effort results in more thorough reasoning but uses more tokens and time
-const REASONING_EFFORT = "medium";
+// AI Gateway ID - leave empty to bypass gateway
+const AI_GATEWAY_ID = "new-gateway";
 
-// summary: Controls the detail level of reasoning summaries (auto, concise, detailed)
-// Useful for debugging and understanding the model's reasoning process
-const REASONING_SUMMARY = "auto";
-
-// AI Gateway Configuration (optional)
-// Set your gateway ID to enable AI Gateway with guardrails, caching, and analytics
-// Leave empty ("") to send requests directly to the model without AI Gateway
-// When empty, all requests go straight to GPT-OSS-120b without any gateway processing
-const AI_GATEWAY_ID = "new-gateway"; // Example: "chatbot-gateway" - Create an AI Gateway in the Dashboard and set the ID here
-
-// Default system prompt (kept) + small safety shim
+// System prompts
 const SYSTEM_PROMPT =
   "You are a helpful, friendly assistant. Provide concise and accurate responses.";
 const SAFETY_SHIM =
   "If a user asks for illegal, violent, or harmful instructions, refuse briefly and suggest safer, educational alternatives.";
 
-/**
- * Normalize incoming JSON and be resilient to extra fields
- */
+// Request body type
 type IncomingBody = {
   messages?: ChatMessage[];
   blockedUserContents?: string[];
@@ -55,36 +41,21 @@ export default {
   },
 } satisfies ExportedHandler<Env>;
 
-/**
- * Build sanitized conversation history for GPT-OSS-120b Responses API
- * 
- * GPT-OSS-120b uses the Responses API format which differs from the chat/messages API:
- * - Uses 'input' parameter (string or array) for the user's input
- * - Uses 'instructions' parameter for system prompts instead of system role messages
- * 
- * This function:
- * - Cleans and sanitizes the conversation history
- * - Drops any assistant lines that look like 'blocked by guardrails'
- * - Drops any user messages whose content is present in blockedUserContents
- * - Limits to last 16 messages to avoid context overflow
- * - Formats the conversation as a simple string for the input parameter
- */
+// Build sanitized conversation history for GPT-OSS-120b
+// Removes blocked content, limits context window, formats as string
 function buildModelInput(
   raw: ChatMessage[],
   blockedUserContents: Set<string>
 ): { instructions: string; input: string } {
-  // Build the instructions (system prompt) for the model
   const instructions = `${SYSTEM_PROMPT}\n\nSafety: ${SAFETY_SHIM}`;
-
-  // Clean up historical turns
   const cleaned: ChatMessage[] = [];
   for (let i = 0; i < raw.length; i++) {
     const m = raw[i];
 
-    // Ignore any system prompts coming from client (handled via instructions parameter)
+    // Skip system messages
     if (m.role === "system") continue;
 
-    // Drop any user content we've previously marked as blocked
+    // Skip blocked user content
     if (m.role === "user" && typeof m.content === "string" && blockedUserContents.has(m.content)) {
       continue;
     }
@@ -95,7 +66,7 @@ function buildModelInput(
       /blocked by guardrails/i.test(m.content);
 
     if (looksLikeGuardrailNotice) {
-      // Drop this assistant message and (if adjacent) the previous user message
+      // Remove guardrail notice and preceding user message
       if (cleaned.length && cleaned[cleaned.length - 1].role === "user") {
         cleaned.pop();
       }
@@ -105,18 +76,14 @@ function buildModelInput(
     cleaned.push(m);
   }
 
-  // Limit to last 16 messages to stay within context window efficiently
+  // Limit context window
   const windowed =
     cleaned.length > 16 ? cleaned.slice(cleaned.length - 16) : cleaned;
 
-  // Format conversation as a simple string
-  // For GPT-OSS-120b, we'll format it as a conversational string
-  // If there's only one message (the current user message), just return it
+  // Format as conversational string
   if (windowed.length === 1 && windowed[0].role === "user") {
     return { instructions, input: windowed[0].content };
   }
-  
-  // If there's conversation history, format it as a readable conversation
   const conversationText = windowed
     .map((m) => {
       if (m.role === "user") {
@@ -132,13 +99,12 @@ function buildModelInput(
   return { instructions, input: conversationText };
 }
 
-/** Parse AI Gateway error shapes robustly (fixes TS squiggles) */
+// Parse AI Gateway error response
 function parseGatewayError(body: unknown): { code?: number; message?: string } {
   try {
     if (body && typeof body === "object") {
       const b = body as Record<string, unknown>;
 
-      // { error: [{ code, message }]} or { errors: [{ code, message }]}
       const arr1 = Array.isArray((b as any).error) ? (b as any).error : undefined;
       if (arr1 && arr1.length && typeof arr1[0] === "object") {
         return { code: (arr1[0] as any).code, message: (arr1[0] as any).message };
@@ -148,20 +114,16 @@ function parseGatewayError(body: unknown): { code?: number; message?: string } {
         return { code: (arr2[0] as any).code, message: (arr2[0] as any).message };
       }
 
-      // { error: "string" } or { message: "string" } or { detail: "string" }
       if (typeof b.error === "string") return { message: b.error };
       if (typeof b.message === "string") return { message: b.message };
       if (typeof (b as any).detail === "string") return { message: (b as any).detail };
     }
   } catch {
-    // fallthrough
   }
   return {};
 }
 
-/**
- * Handles the POST /api/chat request, calls the model, and streams the response
- */
+// Handle chat API request
 async function handleChatRequest(request: Request, env: Env): Promise<Response> {
   try {
     const raw = (await request.json()) as unknown as IncomingBody;
@@ -170,34 +132,16 @@ async function handleChatRequest(request: Request, env: Env): Promise<Response> 
       Array.isArray(raw?.blockedUserContents) ? raw!.blockedUserContents! : []
     );
 
-    // Build sanitized model input for GPT-OSS-120b Responses API
     const { instructions, input } = buildModelInput(messages, blocked);
 
-    // Build AI options for GPT-OSS-120b Responses API
-    // Note: GPT-OSS-120b uses 'input' (string) and 'instructions' instead of 'messages'
+    // Build AI options
     const aiOptions: any = {
-      // input: The conversation as a string (not an array)
       input: input,
     };
-    
-    // Add instructions if we have them
-    // Note: Testing without instructions first to see if that's causing issues
-    // Uncomment if needed:
-    // aiOptions.instructions = instructions;
-    
-    // Add reasoning configuration if needed
-    // Note: Commenting out temporarily to test basic functionality
-    // Uncomment once basic chat is working:
-    // aiOptions.reasoning = {
-    //   effort: REASONING_EFFORT,
-    //   summary: REASONING_SUMMARY,
-    // };
 
-    // Build run options with optional gateway
-    // Note: Removing returnRawResponse to get the parsed response directly
+    // Configure gateway if enabled
     const runOptions: any = {};
 
-    // Only add gateway if AI_GATEWAY_ID is configured
     if (AI_GATEWAY_ID) {
       runOptions.gateway = {
         id: AI_GATEWAY_ID,
@@ -206,12 +150,10 @@ async function handleChatRequest(request: Request, env: Env): Promise<Response> 
       };
     }
 
-    // Run LLM request (with or without AI Gateway)
-    // Cast MODEL_ID to 'any' to avoid TypeScript errors with new model IDs not yet in type definitions
+    // Run AI model
     const aiResponse = await env.AI.run(MODEL_ID as any, aiOptions, runOptions);
 
-    // Extract the response text from the AI response
-    // GPT-OSS-120b returns a complex response structure with reasoning and message output
+    // Extract response text
     let responseText = "";
     
     if (typeof aiResponse === "string") {
@@ -219,15 +161,11 @@ async function handleChatRequest(request: Request, env: Env): Promise<Response> 
     } else if (aiResponse && typeof aiResponse === "object") {
       const resp = aiResponse as any;
       
-      // GPT-OSS-120b Responses API format:
-      // The response has an "output" array with reasoning and message objects
-      // We need to find the message object and extract the text from it
+      // Parse GPT-OSS-120b response format
       if (resp.output && Array.isArray(resp.output)) {
-        // Find the message output (type: "message")
         const messageOutput = resp.output.find((item: any) => item.type === "message");
         
         if (messageOutput && messageOutput.content && Array.isArray(messageOutput.content)) {
-          // Extract text from the first content item
           const textContent = messageOutput.content.find((item: any) => item.type === "output_text");
           if (textContent && textContent.text) {
             responseText = textContent.text;
@@ -235,7 +173,7 @@ async function handleChatRequest(request: Request, env: Env): Promise<Response> 
         }
       }
       
-      // Fallback to other common formats if the above didn't work
+      // Fallback formats
       if (!responseText) {
         if (resp.response) {
           responseText = resp.response;
@@ -246,14 +184,13 @@ async function handleChatRequest(request: Request, env: Env): Promise<Response> 
         } else if (resp.result && resp.result.response) {
           responseText = resp.result.response;
         } else {
-          // If we can't find the text, log the whole response
           console.error("Could not extract text from response:", aiResponse);
           responseText = "Error: Could not parse AI response";
         }
       }
     }
     
-    // Return simple JSON response (non-streaming for now)
+    // Return JSON response
     return new Response(
       JSON.stringify({ 
         response: responseText,
@@ -267,15 +204,13 @@ async function handleChatRequest(request: Request, env: Env): Promise<Response> 
   } catch (error) {
     console.error("Error processing chat request:", error);
     
-    // Check if this is an AI Gateway security block error
+    // Handle AI Gateway errors
     if (error && typeof error === "object") {
       const errorObj = error as any;
       
-      // Parse AI Gateway error from the error object
       let gatewayError = null;
       if (errorObj.message && typeof errorObj.message === "string") {
         try {
-          // The error message might contain JSON
           const jsonMatch = errorObj.message.match(/\{.*\}/);
           if (jsonMatch) {
             const parsed = JSON.parse(jsonMatch[0]);
@@ -284,11 +219,9 @@ async function handleChatRequest(request: Request, env: Env): Promise<Response> 
             }
           }
         } catch (parseErr) {
-          // Ignore parse errors
         }
       }
       
-      // Handle specific AI Gateway error codes
       if (gatewayError && gatewayError.code === 2016) {
         return new Response(
           JSON.stringify({
@@ -322,7 +255,6 @@ async function handleChatRequest(request: Request, env: Env): Promise<Response> 
       }
     }
     
-    // Generic error fallback
     return new Response(JSON.stringify({ error: "Failed to process request" }), {
       status: 500,
       headers: { "content-type": "application/json" },
