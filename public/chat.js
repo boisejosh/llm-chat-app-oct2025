@@ -1,13 +1,10 @@
 /**
- * Cloudflare Workers AI Chat — Stunning UI with markdown, themes, and killer error handling
- * Features:
- * - Light/Dark theme toggle with smooth transitions
- * - Markdown rendering for AI responses with syntax highlighting
- * - Enhanced error handling with detailed messages
- * - Optional AI Gateway with smart detection
- * - Dynamic chat bubbles with proper sizing
+ * UI behavior preserved; styling handled in styles.css
+ * - Even spacing & dynamic bubble widths
+ * - Smooth autoscroll on new messages
+ * - Focus returns to textarea after send
+ * - High-contrast pills now live in HTML as links
  */
-
 const chatMessages = document.getElementById("chat-messages");
 const userInput = document.getElementById("user-input");
 const sendButton = document.getElementById("send-button");
@@ -18,55 +15,43 @@ let chatHistory = [
   { role: "assistant", content: "Hello! I'm an AI assistant powered by Cloudflare Workers AI. I can help you with questions, coding, writing, and more. How can I assist you today?" }
 ];
 
-// Any user prompts that were blocked by Guardrails get remembered here
 const blockedUserContents = [];
-
 let isProcessing = false;
 let lastSentUserText = "";
 
-// Configure marked for markdown rendering
+// Markdown highlighting config (unchanged)
 if (typeof marked !== 'undefined') {
   marked.setOptions({
     breaks: true,
     gfm: true,
     highlight: function(code, lang) {
       if (typeof hljs !== 'undefined' && lang && hljs.getLanguage(lang)) {
-        try {
-          return hljs.highlight(code, { language: lang }).value;
-        } catch (err) {}
+        try { return hljs.highlight(code, { language: lang }).value; } catch (err) {}
       }
       return code;
     }
   });
 }
 
-// Theme toggle functionality
+// Theme toggle (unchanged)
 function initTheme() {
   const savedTheme = localStorage.getItem('theme') || 'dark';
   document.documentElement.setAttribute('data-theme', savedTheme);
   updateThemeIcon(savedTheme);
 }
-
 function toggleTheme() {
-  const currentTheme = document.documentElement.getAttribute('data-theme');
-  const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
-  document.documentElement.setAttribute('data-theme', newTheme);
-  localStorage.setItem('theme', newTheme);
-  updateThemeIcon(newTheme);
+  const current = document.documentElement.getAttribute('data-theme');
+  const next = current === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  localStorage.setItem('theme', next);
+  updateThemeIcon(next);
 }
-
 function updateThemeIcon(theme) {
   const sunIcon = themeToggle.querySelector('.sun-icon');
   const moonIcon = themeToggle.querySelector('.moon-icon');
-  if (theme === 'dark') {
-    sunIcon.style.display = 'block';
-    moonIcon.style.display = 'none';
-  } else {
-    sunIcon.style.display = 'none';
-    moonIcon.style.display = 'block';
-  }
+  if (theme === 'dark') { sunIcon.style.display = 'block'; moonIcon.style.display = 'none'; }
+  else { sunIcon.style.display = 'none'; moonIcon.style.display = 'block'; }
 }
-
 initTheme();
 themeToggle.addEventListener('click', toggleTheme);
 
@@ -105,12 +90,11 @@ async function sendMessage() {
   lastSentUserText = message;
   chatHistory.push({ role: "user", content: message });
 
-  // Assistant bubble we stream into
+  // Assistant bubble we render into
   const assistantEl = renderMessage("assistant", "");
   const contentDiv = assistantEl.querySelector(".message-content");
 
   try {
-    // Filter out any previously blocked user prompts before sending
     const sanitizedMessages = chatHistory.filter(
       (m) => !(m.role === "user" && blockedUserContents.includes(m.content))
     );
@@ -118,21 +102,14 @@ async function sendMessage() {
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        messages: sanitizedMessages,
-        blockedUserContents
-      })
+      body: JSON.stringify({ messages: sanitizedMessages, blockedUserContents })
     });
 
     if (!res.ok) {
-      // Enhanced error handling with detailed messages
       const errorData = await res.json().catch(() => ({}));
-      
-      // Remove the empty assistant message
       assistantEl.remove();
-      
+
       if (errorData.errorType === "prompt_blocked") {
-        // Prompt was blocked - remove from history
         popLastUserTurn();
         rememberBlockedUser(lastSentUserText);
         renderErrorMessage(
@@ -141,14 +118,12 @@ async function sendMessage() {
           "prompt_blocked"
         );
       } else if (errorData.errorType === "response_blocked") {
-        // Response was blocked - keep user message in history
         renderErrorMessage(
           errorData.error || "Response Blocked",
           errorData.details || "The AI's response was blocked by security policy.",
           "response_blocked"
         );
       } else {
-        // Generic error
         renderErrorMessage(
           errorData.error || "Error",
           errorData.details || "An error occurred while processing your request.",
@@ -158,37 +133,14 @@ async function sendMessage() {
       return;
     }
 
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let acc = "";
+    const data = await res.json();
+    const responseText = data.response || "";
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+    if (typeof marked !== 'undefined') contentDiv.innerHTML = marked.parse(responseText);
+    else contentDiv.textContent = responseText;
 
-      const chunk = decoder.decode(value, { stream: true });
-      for (const line of chunk.split("\n")) {
-        if (!line.startsWith("data:")) continue;
-        try {
-          const json = JSON.parse(line.slice(5));
-          if (typeof json.response === "string") {
-            acc += json.response;
-            // Render markdown in real-time
-            if (typeof marked !== 'undefined') {
-              contentDiv.innerHTML = marked.parse(acc);
-            } else {
-              contentDiv.textContent = acc;
-            }
-            scrollToBottom();
-          }
-        } catch (e) {
-          // Ignore partial JSON from chunk boundaries
-          console.debug("Stream parse skip:", e);
-        }
-      }
-    }
-
-    chatHistory.push({ role: "assistant", content: acc || "…" });
+    scrollToBottom();
+    chatHistory.push({ role: "assistant", content: responseText || "…" });
   } catch (err) {
     console.error(err);
     assistantEl.remove();
@@ -201,7 +153,7 @@ async function sendMessage() {
     typingIndicator.classList.remove("visible");
     isProcessing = false;
     setInputsEnabled(true);
-    userInput.focus();
+    userInput.focus(); // keep typing flow
   }
 }
 
@@ -210,29 +162,26 @@ function renderMessage(role, content) {
   wrap.className = `message ${role}-message`;
   const contentDiv = document.createElement("div");
   contentDiv.className = "message-content";
-  
+
   if (role === "assistant" && typeof marked !== 'undefined' && content) {
-    // Render markdown for assistant messages
     contentDiv.innerHTML = marked.parse(content);
   } else {
-    // Plain text for user messages or if marked is not available
     contentDiv.textContent = content;
   }
-  
+
   wrap.appendChild(contentDiv);
   chatMessages.appendChild(wrap);
   scrollToBottom();
   return wrap;
 }
 
-function renderErrorMessage(title, details, errorType) {
+function renderErrorMessage(title, details) {
   const wrap = document.createElement("div");
   wrap.className = "error-message";
-  
+
   const titleDiv = document.createElement("div");
   titleDiv.className = "error-title";
-  
-  // Add error icon
+
   const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   icon.setAttribute("class", "error-icon");
   icon.setAttribute("viewBox", "0 0 24 24");
@@ -240,21 +189,20 @@ function renderErrorMessage(title, details, errorType) {
   const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
   path.setAttribute("d", "M12 22C6.47715 22 2 17.5228 2 12C2 6.47715 6.47715 2 12 2C17.5228 2 22 6.47715 22 12C22 17.5228 17.5228 22 12 22ZM12 20C16.4183 20 20 16.4183 20 12C20 7.58172 16.4183 4 12 4C7.58172 4 4 7.58172 4 12C4 16.4183 7.58172 20 12 20ZM11 15H13V17H11V15ZM11 7H13V13H11V7Z");
   icon.appendChild(path);
-  
+
   titleDiv.appendChild(icon);
   titleDiv.appendChild(document.createTextNode(title));
-  
+
   const detailsDiv = document.createElement("div");
   detailsDiv.className = "error-details";
   detailsDiv.textContent = details;
-  
+
   wrap.appendChild(titleDiv);
   wrap.appendChild(detailsDiv);
   chatMessages.appendChild(wrap);
   scrollToBottom();
   return wrap;
 }
-
 
 function scrollToBottom() {
   chatMessages.scrollTop = chatMessages.scrollHeight;
@@ -276,10 +224,8 @@ function popLastUserTurn() {
 
 function rememberBlockedUser(text) {
   if (!text) return;
-  // Keep the list modest
   if (!blockedUserContents.includes(text)) {
     blockedUserContents.push(text);
     if (blockedUserContents.length > 20) blockedUserContents.shift();
   }
 }
-
